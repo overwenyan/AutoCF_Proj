@@ -1,0 +1,10 @@
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+/AutoCF_Proj/
+/AutoCF-src
+/data
+/__pycache__
+
