@@ -1,0 +1,1 @@
+{'cf': 'rr', 'emb': {'u': 'mlp', 'i': 'mlp'}, 'ifc': 'max', 'pred': 'mlp'}

@@ -2,10 +2,12 @@ import argparse
 from audioop import rms
 import logging
 import os
+from re import L
 import sys
 from itertools import product
 from time import localtime, sleep, strftime, time
 
+import json
 import numpy as np
 import setproctitle # to set the name of process
 import torch
@@ -14,9 +16,9 @@ from tensorboardX import SummaryWriter
 from torch import multiprocessing as mp # 多线程工作
 
 from dataset import get_data_queue_cf, get_data_queue_cf_nonsparse, get_data_queue_efficiently, get_data_queue_negsampling_efficiently
-from models import (CML, DELF, DMF, FISM, GMF, MLP, SVD, JNCF_Cat, JNCF_Dot, SVD_plus_plus, SPACE)
+from models import (CML, DELF, DMF, FISM, GMF, MLP, SVD, JNCF_Cat, JNCF_Dot, SVD_plus_plus, SPACE, BaseModel, Virtue_CF)
 from controller import sample_arch_cf, sample_arch_cf_signal, sample_arch_cf_test
-from train_eval import (evaluate_cf, evaluate_cf_efficiently, evaluate_cf_efficiently_implicit, get_arch_performance_cf_signal_param_device, get_arch_performance_single_device, train_single_cf, train_single_cf_efficiently,get_arch_performance_implicit_single_device)
+from train_eval import (evaluate_cf, evaluate_cf_efficiently, evaluate_cf_efficiently_implicit, get_arch_performance_cf_signal_param_device, get_arch_performance_single_device, train_single_cf, train_single_cf_efficiently,get_arch_performance_implicit_single_device,evaluate_cf_efficiently_implicit_minibatch)
 
 import GPUtil
 import socket
@@ -34,7 +36,7 @@ parser.add_argument('--minibatch', type=int, default=1, help='whether use miniba
 parser.add_argument('--gpu', type=int, default=0, help='gpu device id')
 parser.add_argument('--train_epochs', type=int, default=2000, help='num of training epochs')
 parser.add_argument('--search_epochs', type=int, default=1000, help='num of searching epochs')
-parser.add_argument('--save', type=str, default='logs', help='experiment name')
+parser.add_argument('--save', type=str, default='save/', help='experiment name')
 parser.add_argument('--seed', type=int, default=1, help='random seed')
 parser.add_argument('--grad_clip', type=float, default=5, help='gradient clipping')
 parser.add_argument('--train_portion', type=float, default=0.5, help='portion of training data')
@@ -57,6 +59,7 @@ parser.add_argument('--arch_assign', type=str, default='[0,3]', help='')
 parser.add_argument('--data_type', type=str, default='implicit', help='explicit or implicit(default)')
 parser.add_argument('--loss_func', type=str, default='bprloss', help='Implicit loss function')
 parser.add_argument('--mark', type=str, default='') # 
+parser.add_argument('--batch_size', type=int, default=5000, help='batch size')
 
 args = parser.parse_args()
 mp.set_start_method('spawn', force=True) # 一种多任务运行方法
@@ -68,10 +71,10 @@ def get_hyperparam_performance(x):
     return get_arch_performance_cf_signal_param_device(arch, num_users, num_items, train_queue, test_queue, args, param, device_id)
 
 def get_single_model_performance(x):
-    if len(x) == 10:
+    if len(x) == 10: # for explicit
         arch, num_users, num_items, train_queue, valid_queue, test_queue, args, param, device_id, if_valid = x
         return get_arch_performance_single_device(arch, num_users, num_items, train_queue, valid_queue, test_queue, args, param, device_id, if_valid)
-    else:
+    else: # for implicit
         arch, num_users, num_items, train_queue, valid_queue, test_queue, train_queue_pair, args, param, device_id, if_valid = x
         return get_arch_performance_implicit_single_device(arch, num_users, num_items, train_queue, valid_queue, test_queue, train_queue_pair, args, param, device_id, if_valid)
 
@@ -84,14 +87,15 @@ if __name__ == '__main__':
     log_format = '%(asctime)s %(message)s' # 记录精确的实践
     logging.basicConfig(stream=sys.stdout, level=logging.INFO, filemode='w', format=log_format, datefmt='%m/%d %I:%M:%S %p')
     current_time = strftime("%Y-%m-%d-%H:%M:%S", localtime())
-    args.save = 'save/'
+    # args.save = 'save/'
     save_name = args.mode + '_' + args.dataset + '_' + str(args.embedding_dim) + '_' + args.opt + str(args.lr)
     save_name += '_' + str(args.data_type)
 
     if args.mode == 'reinforce':
         save_name += '_' + str(args.controller_lr) + '_' + args.controller + '_' + str(args.controller_batch_size)
     else:
-        save_name += '_' + str(args.weight_decay) # default=1e-5
+        # save_name += '_' + str(args.weight_decay) # default=1e-5
+        save_name += '_' + ('%.6f' % (args.weight_decay)) 
     save_name += '_' + str(args.seed) # default=1
     save_name += '_' + current_time
     # save_name = args.mode + '_' + args.dataset + '_' + str(args.embedding_dim) + '_' 
@@ -136,6 +140,8 @@ if __name__ == '__main__':
     elif args.dataset == 'ml-10m':
         num_users = 71567
         num_items = 65133
+        # num_users = 715
+        # num_items = 653
     elif args.dataset == 'ml-20m':
         num_users = 138493
         num_items = 131262
@@ -153,11 +159,33 @@ if __name__ == '__main__':
         num_users = 11899
         num_items = 16196
     elif args.dataset == 'yelp':
-        num_users = 26829
-        num_items = 20344
+        # num_users = 26829
+        # num_items = 20344
+        # 31668, item_set: 1237259
+        num_users = 31668 
+        num_items = 38048
     elif args.dataset == 'yelp2':
         num_users = 15496
         num_items = 12666
+    # yelp generated from: https://www.kaggle.com/yelp-dataset/yelp-dataset
+    elif args.dataset == 'yelp-10k':
+        num_users = 9357-1
+        num_items = 4299
+    elif args.dataset == 'yelp-50k':
+        num_users = 42919-1
+        num_items = 9033
+    elif args.dataset == 'yelp-100k':
+        num_users = 80388-1
+        num_items = 11223
+    elif args.dataset == 'yelp-1m':
+        num_users = 551747-1
+        num_items = 28085
+    elif args.dataset == 'yelp-10m':
+        num_users = 1483546-1
+        num_items = 90315
+    elif args.dataset == 'yelp-all':
+        num_users = 1483546-1
+        num_items = 90315
     else:
         pass
     args.num_users = num_users
@@ -173,7 +201,8 @@ if __name__ == '__main__':
 
 
     # 分不同的mode运行代码  default='random_single', help='search or single mode'
-    print("args.mode: {}".format(args.mode)) # 应该只要运行一次即可
+    # print("args.mode: {}".format(args.mode)) # 应该只要运行一次即可
+    print('Debug in model {}'.format(args.mode))
     
     # 这个模式下不进行训练，只对专门的数据集搜索所有可能的架构（135个）
     if args.mode == 'get_arch': #需要search的时候才使用
@@ -183,9 +212,11 @@ if __name__ == '__main__':
         written_arches = []
         args.search_epochs = min(args.search_epochs, SPACE) 
         # default=1000, SPACE = 9 * 5 * 3 = 135
+        model_cnt = 0
         while True:
             arch_single = sample_arch_cf() # sample简单的CF model表示的dict()
-            print("arch_single: {}".format(arch_single))
+            model_cnt += 1
+            print("model_cnt: {}, arch_single: {}".format(model_cnt,arch_single))
             arch_encoding = '{}_{}_{}_{}_{}'.format(arch_single['cf'], arch_single['emb']['u'], arch_single['emb']['i'], arch_single['ifc'], arch_single['pred'])
             while arch_encoding in written_arches:
                 arch_single = sample_arch_cf()
@@ -197,7 +228,7 @@ if __name__ == '__main__':
                 fw.close()
                 break
     
-    # 大概是explicit的情况下才使用
+    # 大概是explicit的情况下才使用，没搞懂这个模式的用处
     if args.mode == 'random_cf_signal': 
         search_start = time()
         performance = {}
@@ -228,14 +259,13 @@ if __name__ == '__main__':
 
     # 单个模型的NAS，采用random search，第一阶段用不到
     if args.mode == 'random_single':
-        
         search_start = time()
         performance = {}
         best_arch, best_rmse = None, 100000
         arch_batch_size = 1  
-        args.search_epochs = min(args.search_epochs, SPACE)
+        args.search_epochs = min(args.search_epochs, SPACE) # SPACE=135
     
-        remaining_arches_encoding = open(args.remaining_arches, 'r').readlines()
+        remaining_arches_encoding = open(args.remaining_arches, 'r').readlines() # opten the file of arch
         remaining_arches_encoding = list(map(lambda x: x.strip(), remaining_arches_encoding))
         if not args.arch_assign:
             remaining_arches_encoding = remaining_arches_encoding
@@ -243,7 +273,10 @@ if __name__ == '__main__':
             start, end = eval(args.arch_assign)
             remaining_arches_encoding = remaining_arches_encoding[start:end]
         arch_count = 0
+        print("remaining_arches_encoding: {}".format(remaining_arches_encoding))
         while True:
+            # 对不同的arch进行采样，可以选择遍历所有的arch， 数量为arch_count加到len(remaining_arches_encoding)
+            # 循环内部arch不变
             if arch_count >= len(remaining_arches_encoding):
                 break
             # sample an arch
@@ -251,10 +284,11 @@ if __name__ == '__main__':
             arch_single = sample_arch_cf()
             arch_single['cf'], arch_single['emb']['u'], arch_single['emb']['i'], arch_single['ifc'], arch_single['pred'] = arch_encoding.split('_')
             arch_count += 1
-            performance[str(arch_single)] = 0
+            
+            
             if len(performance) >= len(remaining_arches_encoding):
                 break
-
+            performance[str(arch_single)] = []#0
 
             arch_start = time()
             avaliable_device_ids = [0,1,2,3]
@@ -271,52 +305,73 @@ if __name__ == '__main__':
             elif hostname =='rl2':
                 avaliable_device_ids = [0, 1, 2, 3]
             elif hostname == 'abc':
-                avaliable_device_ids = [4,5,6,7]
+                # avaliable_device_ids = [4,5,6,7]
+                avaliable_device_ids = [0,1,2,3,4,5,6,7]
             else:
                 pass
 
             lr_candidates = [0.01, 0.02, 0.05, 0.1]
-            rank_candidates = [2, 4, 8, 16]
-            hyper_parameters = list(product(lr_candidates, rank_candidates))
+            rank_candidates = [2, 4, 8, 16] # embeds #后面的16来源于两者之积
+            hyper_parameters = list(product(lr_candidates, rank_candidates)) #product 笛卡尔积
             run_one_model = 0
+            anchor_config_num = len(hyper_parameters)
 
 
             while True:
+                # 对于每一个arch，这个while应该只循环一次
                 avaliable_device_ids = GPUtil.getAvailable(order = 'first', limit = 8, maxLoad = 0.5, maxMemory = 0.2, includeNan=False, excludeID=[], excludeUUID=[])
                 if hostname == 'fib':
                     avaliable_device_ids = [0, 1, 2, 3]
                 elif hostname == 'abc':
-                    avaliable_device_ids = [4,5,6,7]
+                    avaliable_device_ids = [0,1,2,3,4,5,6,7]
+                    avaliable_device_ids = GPUtil.getAvailable(order = 'first', limit = 8, maxLoad = 0.5, maxMemory = 0.2, includeNan=False, excludeID=[], excludeUUID=[])
                 else:
                     pass
-                print(avaliable_device_ids)
-                assigned_device_ids = avaliable_device_ids
+                
+                print("host abc avaliable_device_ids: {}".format(avaliable_device_ids))
+                if len(avaliable_device_ids) == 0:
+                    avaliable_device_ids = [0, 2] # 默认的两张卡，最少情况，程序一定要跑下去!不能中途中断！
+                    print("Not enough avaliable_device_ids, we use default: {}!".format(avaliable_device_ids))
+
+                assigned_device_ids = avaliable_device_ids# final gpu-ids
                 if run_one_model > 0:
-                    break
-                task_number = math.ceil(16 / len(avaliable_device_ids)) 
-                task_split = list(range(0, 16, len(avaliable_device_ids)))
-                task_split.append(16)
+                    print('已经跑完这个模型')
+                    break # 代表单独的一个arch跑完了所有的tasks, 
+                task_number = math.ceil(anchor_config_num / len(assigned_device_ids)) 
+                task_split = list(range(0, anchor_config_num, len(assigned_device_ids)))
+                task_split.append(anchor_config_num)
                 task_index = [list(range(task_split[i], task_split[i+1])) for i in range(task_number)]
+                # doing 16 tasks - mutiprocess
                 for tasks in task_index:
                     with mp.Pool(processes=len(tasks)) as p:
                         print('Stage1')
                         p.name = 'test'
-                        if args.data_type == 'implicit':
+                        if args.data_type == 'implicit':# 装载
                             jobs = [[arch_single, num_users, num_items, [], valid_queue, test_queue, train_queue_pair, args, hyper_parameters[i], assigned_device_ids[i % len(assigned_device_ids)], args.if_valid] for i in tasks]
                         else:
                             jobs = [[arch_single, num_users, num_items, train_queue, valid_queue, test_queue, args, hyper_parameters[i], assigned_device_ids[i % len(assigned_device_ids)], args.if_valid] for i in tasks]
                         rmse_list1 = p.map(get_single_model_performance, jobs)
+                        # performance[str(arch_single)].append(rmse_list1)
+                        performance[str(arch_single)] += rmse_list1
                         run_one_model += 1
                         p.close()
+                
+                if len(performance[str(arch_single)]) < anchor_config_num:
+                    print('大小出问题')
 
-                for k in range(len(hyper_parameters)):
-                    arch_encoding = '{}_{}_{}_{}_{}'.format(arch_single['cf'], arch_single['emb']['u'], arch_single['emb']['i'], arch_single['ifc'], arch_single['pred'])
+                # 这一部分不知道干什么
+                # for k in range(len(hyper_parameters)):
+                #     arch_encoding = '{}_{}_{}_{}_{}'.format(arch_single['cf'], arch_single['emb']['u'], arch_single['emb']['i'], arch_single['ifc'], arch_single['pred'])
+        # recall20, recall10
+        info_json = json.dumps(performance,sort_keys=False, indent=4, separators=(',', ': '))
+        f = open(os.path.join(args.save, 'random_nas_perf17.json' ), 'w')
+        f.write(info_json)
+                
 
     # 不搜索，采用单独的模型进行分析
     elif args.mode == 'DELF' or 'SVD_plus_plus' or 'FISM' or 'SVD' or 'GMF' or 'MLP' or 'CML' or 'JNCF_Dot' or 'JNCF_Cat' or 'DMF':
         # 根据参数选取对应的一个模型
         start = time()
-        print('Debug in model {}'.format(args.mode))
         sleep(1)
         if args.mode == 'DELF': # implicit不行都是sparese tensor,explicit
             model = DELF(num_users, num_items, args.embedding_dim, args.weight_decay)
@@ -338,24 +393,28 @@ if __name__ == '__main__':
             model = JNCF_Cat(num_users, num_items, args.embedding_dim, args.weight_decay)
         elif args.mode == 'DMF': # implicit,explicit有问题  sparse tensors do not have strides
             model = DMF(num_users, num_items, args.embedding_dim, args.weight_decay)
+        elif args.mode == 'MF': 
+            model = Virtue_CF(num_users, num_items, args.embedding_dim, args.weight_decay)
         else:
             print('other mode...')
             pass
         if args.use_gpu:
             model = model.cuda()
         if args.mode == 'test_mlp':
-            optimizer = torch.optim.Adagrad(model.train_parameters(), args.lr) # 默认Adagrad优化， 可以进行分析
+            optimizer = torch.optim.Adagrad(model.train_parameters(), lr=args.lr) # 默认Adagrad优化， 可以进行分析
         elif args.opt == 'Adagrad':
-            optimizer = torch.optim.Adagrad(model.parameters(), args.lr)
+            optimizer = torch.optim.Adagrad(model.parameters(), lr=args.lr)
         elif args.opt == 'Adam':
-            optimizer = torch.optim.Adam(model.parameters(), args.lr)
+            optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
         elif args.opt == 'SGD':
-            optimizer = torch.optim.SGD(model.parameters(), args.lr)
+            optimizer = torch.optim.SGD(model.parameters(), lr=args.lr)
+        elif args.opt == 'RMSprop':
+            optimizer = torch.optim.RMSprop(model.parameters(), lr=args.lr)
         else:
-            optimizer = torch.optim.Adagrad(model.parameters(), args.lr)# default
+            optimizer = torch.optim.Adagrad(model.parameters(), lr=args.lr)# default
         losses = []
         performances = []
-
+        print('here 1')
         # 对explicit和implicit两种模式进行分裂 (yan modified)
         if args.data_type == 'explicit': # 组装数据
             if args.use_gpu:
@@ -391,27 +450,24 @@ if __name__ == '__main__':
                 if train_epoch > 1000:
                     down = 4096 if args.minibatch else train_queue[0].shape[0]
             if dim == 2: # default 2， 验证集合上的操作
-                if 'DMF' in args.mode or 'JNCF' in args.mode:
+                if 'DMF' in args.mode or 'JNCF' in args.mode: #没看出这两者的区别
                     if args.data_type == 'explicit':
                         rmse = evaluate_cf_efficiently(model, test_queue, sparse='ui')
                     else:
                         rmse = evaluate_cf_efficiently_implicit(model, test_queue, all_users, all_items, args)
-                else: # 使用GMF,MLP等
+                else: # 使用GMF,MLP等普通模型
                     if args.data_type == 'explicit':
                         rmse = evaluate_cf_efficiently(model, test_queue, sparse='')
                     else:
+                        # rmse, ndcg  = evaluate_cf_efficiently_implicit_minibatch(model, test_queue, args, num_items, args.device) 
                         rmse  = evaluate_cf_efficiently_implicit(model, test_queue, all_users, all_items, args) # debugging，实际返回值是recall < 1
             performances.append(rmse)
             if args.data_type == 'explicit':
                 logging.info('train_epoch: %d, loss: %.4f, rmse: %.4f[%.4f]' % (train_epoch, loss, rmse, time()-start))
             elif args.data_type == 'implicit':
-                # logging.info('train_epoch: %d, loss: %.4f, recall20: %.4f, ndcg20: %.4f[%.4f]' % (train_epoch, loss, rmse,ndcg, time()-start))
                 logging.info('train_epoch: %d, loss: %.4f, recall20: %.4f[%.4f]' % (train_epoch, loss, rmse, time()-start))
             else:
                 pass
-            # print(train_epoch)
-            # print(loss)
-            # print(rmse)
             
             writer.add_scalar('train/loss', loss, train_epoch) #tensorboard
             writer.add_scalar('train/rmse', rmse, train_epoch)

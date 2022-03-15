@@ -8,7 +8,7 @@ CF_EMB = ['mat', 'mlp'] # Embedding Function
 CF_IFC = ['max', 'min', 'plus', 'mul', 'concat'] # Interacton
 CF_PRED = ['i', 'h', 'mlp'] # Prediction Function
 
-SPACE = (1 + 2 + 2 + 4) * len(CF_IFC) * len(CF_PRED)
+SPACE = (1 + 2 + 2 + 4) * len(CF_IFC) * len(CF_PRED) # 135
 
 OPS = {
     'plus': lambda p, q: p + q,
@@ -93,7 +93,7 @@ class BaseModel(nn.Module):
         nn.init.xavier_normal_(self._UsersRatingsEmbedding)
         self._ItemsRatingsEmbedding = nn.Parameter(torch.FloatTensor(num_users, embedding_dim))
         nn.init.xavier_normal_(self._ItemsRatingsEmbedding)
-        self.pairwise_loss = nn.BCEWithLogitsLoss(size_average=False)
+        self.pairwise_loss = nn.BCEWithLogitsLoss(reduction='sum')#size_average=False
 
     def compute_loss(self, inferences, labels, regs):
         labels = torch.reshape(labels, [-1, 1])
@@ -231,6 +231,36 @@ class SVD(Virtue_CF):
         loss = self.pairwise_loss(inferences, labels) / (inferences.size()[0])
         return loss
 
+class MF(Virtue_CF):
+    # 待修改，from GMF
+    def __init__(self, num_users, num_items, embedding_dim, reg):
+        super(MF, self).__init__(num_users, num_items, embedding_dim, reg)
+        self._W1 = nn.Linear(embedding_dim, 1, bias=False)
+        self.pairwise_loss = nn.BCEWithLogitsLoss(size_average=False)
+
+    def forward(self, users, items, users_ratings, items_ratings):
+        constrain(next(self._W1.parameters()))
+
+        users_embedding = self._UsersEmbedding(users)
+        items_embedding = self._ItemsEmbedding(items)
+
+        self._out1 = users_embedding * items_embedding
+        inference = self._W1(self._out1).sum(dim=1, keepdim=True)
+        regs = self.reg * (torch.norm(users_embedding) +
+                           torch.norm(items_embedding))
+        return inference, regs
+    # modified
+    def forward_pair(self, users, items, negs, users_sparse_ratings, items_sparse_ratings):
+        pos_inferences, pos_regs = self.forward(users, items, users_sparse_ratings, items_sparse_ratings)
+        neg_inferences, neg_regs = self.forward(users, negs, users_sparse_ratings, items_sparse_ratings)
+        inferences = pos_inferences - neg_inferences
+        return inferences, pos_regs + neg_regs
+
+    def compute_loss_pair(self, inferences, regs):
+        labels = torch.ones(inferences.size()[0], device=inferences.device)
+        labels = torch.reshape(labels, [-1, 1])
+        loss = self.pairwise_loss(inferences, labels) / (inferences.size()[0])
+        return loss
 
 class GMF(Virtue_CF):
     def __init__(self, num_users, num_items, embedding_dim, reg):
@@ -508,10 +538,11 @@ class single_model_old(Virtue_CF):
 
 
 class single_model(BaseModel):
+    '''A model whose structure can be tuned by changing `arch`'''
     def __init__(self, num_users, num_items, embedding_dim, arch, reg):
         super(single_model, self).__init__(
             num_users, num_items, embedding_dim, reg)
-        self.pairwise_loss = nn.BCEWithLogitsLoss(size_average=False)
+        self.pairwise_loss = nn.BCEWithLogitsLoss(reduction='sum') # size_average=False,
         self.arch = arch
         self.data_type = 'explicit'
         self._FC1 = nn.Sequential(
@@ -540,9 +571,9 @@ class single_model(BaseModel):
     def compute_loss(self, inferences, labels, regs):
         labels = torch.reshape(labels, [-1, 1])
         if self.data_type == 'explicit':
-            loss = F.mse_loss(inferences, labels)
+            loss = F.mse_loss(inferences, labels, reduction='sum')
         else:
-            loss = F.binary_cross_entropy_with_logits(inferences, labels)
+            loss = F.binary_cross_entropy_with_logits(inferences, labels, reduction='sum')
         return loss + regs
 
     def forward(self, users, items, users_sparse_ratings, items_sparse_ratings):

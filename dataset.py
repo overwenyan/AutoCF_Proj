@@ -22,7 +22,7 @@ class Data(torch.utils.data.Dataset):
 
 def get_queue(users, items, labels, batch_size):
     data = list(zip(users, items, labels))
-    return torch.utils.data.DataLoader(Data(data), batch_size=batch_size)
+    return torch.utils.data.DataLoader(Data(data), batch_size=batch_size, num_workers=8)
 
 
 def get_data_queue(data_path, args):
@@ -389,7 +389,7 @@ def get_index(ratings_dict, labels):
 
 
 def get_data_queue_efficiently(data_path, args):
-    '''从数据集中获取train_queue, valid_queue, test_queue，explicit'''
+    '''从数据集中获取train_queue, valid_queue, test_queue, explicit'''
     users, items, labels = [], [], []
     if args.dataset == 'ml-100k':
         data_path += 'u.data'
@@ -403,6 +403,17 @@ def get_data_queue_efficiently(data_path, args):
         data_path += 'ratings.dat'
     elif args.dataset == 'yelp2':
         data_path += 'ratings.dat'
+
+    elif args.dataset == 'yelp-10k':
+        data_path += 'ratings-10k.dat'
+    elif args.dataset == 'yelp-50k':
+        data_path += 'ratings-50k.dat'
+    elif args.dataset == 'yelp-100k':
+        data_path += 'ratings-100k.dat'
+    elif args.dataset == 'yelp-1m':
+        data_path += 'ratings-1m.dat'
+    elif args.dataset == 'yelp-all':
+        data_path += 'ratings-all.dat'
 
     data_path = 'data/' + data_path
 
@@ -473,9 +484,109 @@ def get_data_queue_negsampling_efficiently(data_path, args):
     elif args.dataset == 'ml-20m':
         data_path += 'ratings.csv'
     elif args.dataset == 'amazon-book':
-        data_path += 'ratings2.dat'
+        # data_path += 'ratings2.dat'
+        data_path += 'ratings_Books.csv'
     elif args.dataset == 'yelp':
         data_path += 'ratings.dat'
+    elif args.dataset == 'yelp2':
+        data_path += 'ratings.dat'
+        
+    elif args.dataset == 'yelp-10k':
+        data_path += 'ratings-10k.dat'
+    elif args.dataset == 'yelp-100k':
+        data_path += 'ratings-100k.dat'
+    elif args.dataset == 'yelp-1m':
+        data_path += 'ratings-1m.dat'
+
+    # if args.dataset == 'yelp-100k' or args.dataset == 'yelp-1m':
+    #     data_path = 'data/' + 'yelp'
+    # else:
+    #     data_path = 'data/' + data_path
+    data_path = 'data/' + data_path
+    with open(data_path, 'r') as f:
+        for i, line in enumerate(f.readlines()):
+            if args.dataset == 'ml-100k':
+                line = line.split()
+            elif args.dataset == 'ml-1m' or args.dataset == 'ml-10m':
+                line = line.split('::')
+            elif args.dataset == 'ml-20m':
+                if i == 0:
+                    continue
+                line = line.split(',')
+            elif args.dataset == 'amazon-book':
+                line = line.split(',')
+            elif args.dataset == 'yelp' or 'yelp2':
+                line = line.split(',')
+            user = int(line[0]) - 1 if args.dataset != 'amazon-book' and args.dataset != 'yelp' and args.dataset != 'yelp2' else int(line[0])
+            item = int(line[1]) - 1 if args.dataset != 'amazon-book' and args.dataset != 'yelp' and args.dataset != 'yelp2' else int(line[1])
+            label = float(line[2])
+            users.append(user)
+            items.append(item)
+            labels.append(label)
+
+    users, items, labels = shuffle(users, items, labels)
+    num_train = int(len(users) * args.train_portion)
+    num_valid = int(len(users) * args.valid_portion)
+
+    users_train = np.array(users[:num_train], dtype=np.int32)
+    items_train = np.array(items[:num_train], dtype=np.int32)
+    labels_train = np.array(labels[:num_train], dtype=np.float32)
+
+    num_users = max(users) + 1
+    num_items = max(items) + 1
+    user_interactions = torch.from_numpy(sp.coo_matrix(
+        (labels_train, (users_train, items_train)), shape=(num_users, num_items)).tocsr().toarray())
+    item_interactions = torch.from_numpy(sp.coo_matrix(
+        (labels_train, (items_train, users_train)), shape=(num_items, num_users)).tocsr().toarray())
+    a = time.time()
+    negs_train = np.zeros(len(labels_train), dtype=np.int64)
+    for k in range(len(labels_train)):
+        neg = np.random.randint(num_items)
+        while user_interactions[users_train[k], neg] != 0:
+            neg = np.random.randint(num_items)
+        negs_train[k] = neg
+    negs_train = torch.from_numpy(negs_train)
+
+
+    train_queue_pair = [torch.tensor(users[:num_train]),
+                        torch.tensor(items[:num_train]),
+                        negs_train,
+                        user_interactions, item_interactions]
+
+    valid_queue = [torch.tensor(users[num_train:num_train+num_valid]),
+                   torch.tensor(items[num_train:num_train+num_valid]),
+                   torch.tensor(labels[num_train:num_train+num_valid]),
+                   user_interactions, item_interactions]
+
+    users_test = np.array(users[num_train+num_valid:], dtype=np.int32)
+    items_test = np.array(items[num_train+num_valid:], dtype=np.int32)
+    labels_test = np.array(labels[num_train+num_valid:], dtype=np.float32)
+    test_user_interactions = torch.from_numpy(sp.coo_matrix(
+        (labels_test, (users_test, items_test)), shape=(num_users, num_items)).tocsr().toarray())
+
+    a = np.argsort(users[num_train+num_valid:])
+    test_queue = [torch.tensor(np.array(users[num_train+num_valid:], dtype=np.int64)[a]),
+                  torch.tensor(np.array(items[num_train+num_valid:], dtype=np.int64)[a]),
+                  test_user_interactions,
+                  user_interactions, item_interactions]
+    return train_queue_pair, valid_queue, test_queue
+
+
+def get_data_queue_subsampling_efficiently(data_path, args):
+    '''implicit数据集组织方法'''
+    users, items, labels = [], [], []
+    if args.dataset == 'ml-100k':
+        data_path += 'u.data'
+    elif args.dataset == 'ml-1m' or args.dataset == 'ml-10m':
+        data_path += 'ratings.dat'
+    elif args.dataset == 'ml-20m':
+        data_path += 'ratings.csv'
+    elif args.dataset == 'amazon-book':
+        # data_path += 'ratings2.dat'
+        data_path += 'ratings_Books.csv'
+    elif args.dataset == 'yelp':
+        data_path += 'ratings.dat'
+        # data_path += 'ratings_100k_num.dat'
     elif args.dataset == 'yelp2':
         data_path += 'ratings.dat'
 

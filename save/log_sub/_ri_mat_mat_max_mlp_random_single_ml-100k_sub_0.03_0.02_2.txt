@@ -1,0 +1,3 @@
+{'cf': 'ri', 'emb': {'u': 'mat', 'i': 'mat'}, 'ifc': 'max', 'pred': 'mlp'}
+train_epoch: 1001, loss: 0.4287, recall20: 0.0000 recall10: 0.0000 [10.1627]
+train_epoch: 1002, loss: 0.4288, recall20: 0.1133 recall10: 0.0625 [10.2056]

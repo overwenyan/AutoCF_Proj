@@ -1,0 +1,10 @@
+{'cf': 'ui', 'emb': {'u': 'mat', 'i': 'mat'}, 'ifc': 'plus', 'pred': 'mlp'}
+train_epoch: 1001, loss: 0.6560, recall20: 0.0000 recall10: 0.0000 [11.4389]
+train_epoch: 1002, loss: 0.6556, recall20: 0.0000 recall10: 0.0000 [11.4568]
+train_epoch: 1003, loss: 0.6551, recall20: 0.0000 recall10: 0.0000 [11.4696]
+train_epoch: 1004, loss: 0.6547, recall20: 0.0000 recall10: 0.0000 [11.4815]
+train_epoch: 1005, loss: 0.6544, recall20: 0.0000 recall10: 0.0000 [11.4938]
+train_epoch: 1006, loss: 0.6542, recall20: 0.0000 recall10: 0.0000 [11.5062]
+train_epoch: 1007, loss: 0.6541, recall20: 0.0000 recall10: 0.0000 [11.5189]
+train_epoch: 1008, loss: 0.6539, recall20: 0.0000 recall10: 0.0000 [11.5314]
+train_epoch: 1009, loss: 0.6712, recall20: 0.0502 recall10: 0.0296 [11.6148]
