@@ -1,2 +1,0 @@
-{'cf': 'rr', 'emb': {'u': 'mat', 'i': 'mat'}, 'ifc': 'concat', 'pred': 'h'}
-train_epoch: 1001, loss: 32373299200.0000, recall20: 0.1258 recall10: 0.0743 [8.9014]
