@@ -16,4 +16,7 @@
 /save/log_sub
 /save/tensorboard
 /save/tensorboard_sub
-*.txt
+/val_structure
+/weight_random
+*.abc
+*.jpg
