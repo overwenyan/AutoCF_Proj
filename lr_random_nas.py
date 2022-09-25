@@ -69,7 +69,7 @@ parser.add_argument('--mark', type=str, default='') #
 parser.add_argument('--batch_size', type=int, default=5000, help='batch size')
 parser.add_argument('--anchor_hp', type=str, default='lr', help='setting an anchor hyper-parameter')
 parser.add_argument('--anchor_num', type=int, default=10, help='size of anchor sample number')
-parser.add_argument('--file_id', type=int, default=256, help='file id')#234
+parser.add_argument('--file_id', type=int, default=30, help='file id')#234
 
 
 args = parser.parse_args()

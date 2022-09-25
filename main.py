@@ -15,10 +15,13 @@ import torch.utils
 from tensorboardX import SummaryWriter
 from torch import multiprocessing as mp # 多线程工作
 
-from dataset import get_data_queue_cf, get_data_queue_cf_nonsparse, get_data_queue_efficiently, get_data_queue_negsampling_efficiently
-from models import (CML, DELF, DMF, FISM, GMF, MLP, SVD, JNCF_Cat, JNCF_Dot, SVD_plus_plus, SPACE, BaseModel, Virtue_CF)
-from controller import sample_arch_cf, sample_arch_cf_signal, sample_arch_cf_test
-from train_eval import (evaluate_cf, evaluate_cf_efficiently, evaluate_cf_efficiently_implicit, get_arch_performance_cf_signal_param_device, get_arch_performance_single_device, train_single_cf, train_single_cf_efficiently,get_arch_performance_implicit_single_device,evaluate_cf_efficiently_implicit_minibatch)
+from dataset import get_data_queue_cf, get_data_queue_cf_nonsparse, get_data_queue_efficiently, get_data_queue_negsampling_efficiently # original graph
+from dataset import get_data_queue_subsampling_efficiently, get_data_queue_subsampling_efficiently_explicit # subsample
+from models import (CML, DELF, DMF, FISM, GMF, MLP, SVD, JNCF_Cat, JNCF_Dot, SVD_plus_plus, SPACE, BaseModel, Virtue_CF, MF, NGCF)
+from controller import sample_arch_cf, sample_arch_cf_signal
+from train_eval import (evaluate_cf_efficiently, evaluate_cf_efficiently_implicit,train_single_cf_efficiently,
+evaluate_cf_efficiently_implicit_minibatch)
+from train_eval import ( get_arch_performance_cf_signal_param_device, get_arch_performance_single_device,get_arch_performance_implicit_single_device, get_arch_performance_time_single_device,get_arch_performance_time_implicit_single_device )
 
 import GPUtil
 import socket
@@ -43,7 +46,8 @@ parser.add_argument('--train_portion', type=float, default=0.5, help='portion of
 parser.add_argument('--valid_portion', type=float, default=0.25, help='portion of validation data')
 parser.add_argument('--dataset', type=str, default='ml-100k', help='dataset')
 parser.add_argument('--mode', type=str, default='random_single', help='search or single mode')
-parser.add_argument('--process_name', type=str, default='AutoCF@wenyan', help='process name')
+# parser.add_argument('--mode', type=str, default='GMF', help='search or single mode')
+parser.add_argument('--process_name', type=str, default='AutoCF_single_model@yan', help='process name')
 parser.add_argument('--embedding_dim', type=int, default=2, help='dimension of embedding')
 parser.add_argument('--controller', type=str, default='PURE', help='structure of controller')
 parser.add_argument('--controller_batch_size', type=int, default=4, help='batch size for updating controller')
@@ -59,10 +63,16 @@ parser.add_argument('--arch_assign', type=str, default='[0,3]', help='')
 parser.add_argument('--data_type', type=str, default='implicit', help='explicit or implicit(default)')
 parser.add_argument('--loss_func', type=str, default='bprloss', help='Implicit loss function')
 parser.add_argument('--mark', type=str, default='') # 
-parser.add_argument('--batch_size', type=int, default=5000, help='batch size')
+parser.add_argument('--batch_size', type=int, default=500, help='batch size')
+parser.add_argument('--file_id', type=int, default=100, help='file id')
+
+parser.add_argument('--use_sample', type=int, default=0, help='whether use data subgraph')
+parser.add_argument('--sample_portion', type=float, default=0.20, help='portion of data subgraph')
+parser.add_argument('--sample_mode', type=str, default='distribute', help='topk or distribute mode of sampling')
 
 args = parser.parse_args()
 mp.set_start_method('spawn', force=True) # 一种多任务运行方法
+# torch.multiprocessing.set_start_method('spawn', force=True)
 
 # 一些辅助函数
 def get_hyperparam_performance(x):
@@ -78,15 +88,27 @@ def get_single_model_performance(x):
         arch, num_users, num_items, train_queue, valid_queue, test_queue, train_queue_pair, args, param, device_id, if_valid = x
         return get_arch_performance_implicit_single_device(arch, num_users, num_items, train_queue, valid_queue, test_queue, train_queue_pair, args, param, device_id, if_valid)
 
+def get_single_model_performance_time(x):
+    if len(x) == 10: # for explicit
+        arch, num_users, num_items, train_queue, valid_queue, test_queue, args, param, device_id, if_valid = x
+        return get_arch_performance_time_single_device(arch, num_users, num_items, train_queue, valid_queue, test_queue, args, param, device_id, if_valid)
+    else: # for implicit
+        arch, num_users, num_items, train_queue, valid_queue, test_queue, train_queue_pair, args, param, device_id, if_valid = x
+        return get_arch_performance_time_implicit_single_device(arch, num_users, num_items, train_queue, valid_queue, test_queue, train_queue_pair, args, param, device_id, if_valid)
+
 
 if __name__ == '__main__':
     torch.set_default_tensor_type(torch.FloatTensor)
+    # args.mode='GMF'
+    args.embedding_dim = 3
+    args.process_name = 'AutoCF'+ '_' + args.mode +'@yan' 
     setproctitle.setproctitle(args.process_name) # 设定进程名称
     os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
     log_format = '%(asctime)s %(message)s' # 记录精确的实践
     logging.basicConfig(stream=sys.stdout, level=logging.INFO, filemode='w', format=log_format, datefmt='%m/%d %I:%M:%S %p')
-    current_time = strftime("%Y-%m-%d-%H:%M:%S", localtime())
+    # current_time = strftime("%Y-%m-%d-%H:%M:%S", localtime())
+    current_time = strftime("%Y%m%d_%H%M%S", localtime())
     # args.save = 'save/'
     save_name = args.mode + '_' + args.dataset + '_' + str(args.embedding_dim) + '_' + args.opt + str(args.lr)
     save_name += '_' + str(args.data_type)
@@ -101,7 +123,7 @@ if __name__ == '__main__':
     # save_name = args.mode + '_' + args.dataset + '_' + str(args.embedding_dim) + '_' 
     # + args.opt + str(args.lr) + '_' + str(args.weight_decay) + '_' 
     # + str(args.seed) + '_' + current_time
-
+    
     # 创建log路径
     if not os.path.exists(args.save):
         os.makedirs(args.save)
@@ -113,6 +135,7 @@ if __name__ == '__main__':
         os.remove(os.path.join(args.save, save_name + '.txt'))
     
     # fh表示
+    # f = open(os.path.join(os.path.join(args.save, 'log'), save_name + '.txt'))
     fh = logging.FileHandler(os.path.join(args.save + 'log', save_name + '.txt'))
     fh.setFormatter(logging.Formatter(log_format))
     logging.getLogger().addHandler(fh)
@@ -121,6 +144,8 @@ if __name__ == '__main__':
     if args.use_gpu: # default = True
         torch.cuda.set_device(args.gpu)
         logging.info('gpu device = %d' % args.gpu)
+        if args.device != args.gpu:
+            args.device = args.gpu
     else:
         logging.info('no gpu')
     torch.manual_seed(args.seed)
@@ -156,14 +181,18 @@ if __name__ == '__main__':
         num_rs = 5
         dim = 3
     elif args.dataset == 'amazon-book':
-        num_users = 11899
-        num_items = 16196
+        # num_users = 11899
+        # num_items = 16196
+        num_users = 25774 # 100 core
+        num_items = 80211
     elif args.dataset == 'yelp':
         # num_users = 26829
         # num_items = 20344
         # 31668, item_set: 1237259
-        num_users = 31668 
-        num_items = 38048
+        # num_users = 31668 
+        # num_items = 38048
+        num_users = 6102
+        num_items = 18599 #  density: 0.3926%
     elif args.dataset == 'yelp2':
         num_users = 15496
         num_items = 12666
@@ -186,23 +215,36 @@ if __name__ == '__main__':
     elif args.dataset == 'yelp-all':
         num_users = 1483546-1
         num_items = 90315
+    elif args.dataset == 'yelp-all2':
+        num_users = 6102-1
+        num_items = 18599
     else:
         pass
     args.num_users = num_users
     args.num_items = num_items
 
+
     if args.data_type == 'implicit': # 主要使用这一行，隐式推荐
-        train_queue_pair, valid_queue, test_queue = get_data_queue_negsampling_efficiently(data_path, args)
+        if args.use_sample == 1: # use_sample
+            train_queue_pair, valid_queue, test_queue = get_data_queue_subsampling_efficiently(data_path, args)
+        else:        
+            train_queue_pair, valid_queue, test_queue = get_data_queue_negsampling_efficiently(data_path, args)
     else: # train queue，显式推荐
-        train_queue, valid_queue, test_queue = get_data_queue_efficiently(data_path, args)
+        if args.use_sample == 1:
+            train_queue, valid_queue, test_queue = get_data_queue_subsampling_efficiently_explicit(data_path, args)
+        else:        
+            # train_queue_pair, valid_queue, test_queue = get_data_queue_negsampling_efficiently(data_path, args)
+            train_queue, valid_queue, test_queue = get_data_queue_efficiently(data_path, args)
+        
     # print(train_queue)
     logging.info('prepare data finish! [%f]' % (time()-data_start))
     stored_arches = {} # log ging表示添加到记录中
-
+    # python main.py --mode GMF --dataset ml-100k --data_type implicit --gpu 5 --device 5 
+    # python main.py --mode random_single --dataset ml-100k --data_type implicit --gpu 5 --device 5  
 
     # 分不同的mode运行代码  default='random_single', help='search or single mode'
     # print("args.mode: {}".format(args.mode)) # 应该只要运行一次即可
-    print('Debug in model {}'.format(args.mode))
+    # print('Debug in model {}, sample_portion={}'.format(args.mode, args.sample_portion))
     
     # 这个模式下不进行训练，只对专门的数据集搜索所有可能的架构（135个）
     if args.mode == 'get_arch': #需要search的时候才使用
@@ -259,6 +301,8 @@ if __name__ == '__main__':
 
     # 单个模型的NAS，采用random search，第一阶段用不到
     if args.mode == 'random_single':
+        num_users = args.num_users 
+        num_items = args.num_items 
         search_start = time()
         performance = {}
         best_arch, best_rmse = None, 100000
@@ -288,7 +332,7 @@ if __name__ == '__main__':
             
             if len(performance) >= len(remaining_arches_encoding):
                 break
-            performance[str(arch_single)] = []#0
+            performance[str(arch_single)] = []
 
             arch_start = time()
             avaliable_device_ids = [0,1,2,3]
@@ -310,8 +354,10 @@ if __name__ == '__main__':
             else:
                 pass
 
-            lr_candidates = [0.01, 0.02, 0.05, 0.1]
-            rank_candidates = [2, 4, 8, 16] # embeds #后面的16来源于两者之积
+            # lr_candidates = [0.01, 0.02, 0.05, 0.1] #
+            # rank_candidates = [2, 4, 8, 16] # embeding_dim #后面的16来源于两者之积
+            lr_candidates = [0.001, 0.005, 0.01, 0.05, 0.1] #
+            rank_candidates = [1, 2, 4, 8, 16] # embeding_dim #后面的16来源于两者之积
             hyper_parameters = list(product(lr_candidates, rank_candidates)) #product 笛卡尔积
             run_one_model = 0
             anchor_config_num = len(hyper_parameters)
@@ -325,14 +371,11 @@ if __name__ == '__main__':
                 elif hostname == 'abc':
                     avaliable_device_ids = [0,1,2,3,4,5,6,7]
                     avaliable_device_ids = GPUtil.getAvailable(order = 'first', limit = 8, maxLoad = 0.5, maxMemory = 0.2, includeNan=False, excludeID=[], excludeUUID=[])
+                    print("host abc avaliable_device_ids: {}".format(avaliable_device_ids))
                 else:
                     pass
-                
-                print("host abc avaliable_device_ids: {}".format(avaliable_device_ids))
-                if len(avaliable_device_ids) == 0:
-                    avaliable_device_ids = [0, 2] # 默认的两张卡，最少情况，程序一定要跑下去!不能中途中断！
-                    print("Not enough avaliable_device_ids, we use default: {}!".format(avaliable_device_ids))
-
+                                
+                avaliable_device_ids = [0]
                 assigned_device_ids = avaliable_device_ids# final gpu-ids
                 if run_one_model > 0:
                     print('已经跑完这个模型')
@@ -364,16 +407,19 @@ if __name__ == '__main__':
                 #     arch_encoding = '{}_{}_{}_{}_{}'.format(arch_single['cf'], arch_single['emb']['u'], arch_single['emb']['i'], arch_single['ifc'], arch_single['pred'])
         # recall20, recall10
         info_json = json.dumps(performance,sort_keys=False, indent=4, separators=(',', ': '))
-        f = open(os.path.join(args.save, 'random_nas_perf17.json' ), 'w')
-        f.write(info_json)
+        # f = open(os.path.join(args.save, 'random_nas_perf17.json' ), 'w')
+        json_f = open(os.path.join(args.save, f'random_nas_{args.dataset}', f'random_nas_{args.dataset}_{args.data_type}_perf_{args.file_id}.json'), 'w')
+        # json_f = open(os.path.join(args.save, 'subgraph'+'_'+str(args.sample_portion) +'_'+'random_nas_'+args.dataset+'_'+args.data_type+'_perf_'+str(args.file_id)+'.json' ), 'w')
+        json_f.write(info_json)
                 
-
     # 不搜索，采用单独的模型进行分析
-    elif args.mode == 'DELF' or 'SVD_plus_plus' or 'FISM' or 'SVD' or 'GMF' or 'MLP' or 'CML' or 'JNCF_Dot' or 'JNCF_Cat' or 'DMF':
+    elif args.mode == 'DELF' or 'SVD_plus_plus' or 'FISM' or 'SVD' or 'GMF' or 'MLP' or 'CML' or 'JNCF_Dot' or 'JNCF_Cat' or 'DMF' or 'NGCF':
         # 根据参数选取对应的一个模型
+        num_users = args.num_users 
+        num_items = args.num_items  
         start = time()
         sleep(1)
-        if args.mode == 'DELF': # implicit不行都是sparese tensor,explicit
+        if args.mode == 'DELF': # implicit explicit not work
             model = DELF(num_users, num_items, args.embedding_dim, args.weight_decay)
         elif args.mode == 'SVD_plus_plus': #implicit, explicit不行
             model = SVD_plus_plus(num_users, num_items, args.embedding_dim, args.weight_decay)
@@ -394,7 +440,9 @@ if __name__ == '__main__':
         elif args.mode == 'DMF': # implicit,explicit有问题  sparse tensors do not have strides
             model = DMF(num_users, num_items, args.embedding_dim, args.weight_decay)
         elif args.mode == 'MF': 
-            model = Virtue_CF(num_users, num_items, args.embedding_dim, args.weight_decay)
+            model = MF(num_users, num_items, args.embedding_dim, args.weight_decay)
+        elif args.mode == 'NGCF':
+            model = NGCF(num_users, num_items, args.embedding_dim, args.weight_decay)
         else:
             print('other mode...')
             pass
@@ -414,12 +462,12 @@ if __name__ == '__main__':
             optimizer = torch.optim.Adagrad(model.parameters(), lr=args.lr)# default
         losses = []
         performances = []
-        print('here 1')
+        print('start construct dataset...')
         # 对explicit和implicit两种模式进行分裂 (yan modified)
         if args.data_type == 'explicit': # 组装数据
             if args.use_gpu:
-                train_queue = [k.cuda() for k in train_queue] # 对单个模型这里容易出问题，train_queue未定义
-            train_queue[3] = train_queue[3].to_sparse() # 转换为SparseDataFrame
+                train_queue = [k.cuda() for k in train_queue]  # add gpu memory when run this line
+            train_queue[3] = train_queue[3].to_sparse() 
             train_queue[4] = train_queue[4].to_sparse()
             if args.use_gpu:
                 test_queue = [k.cuda() for k in test_queue]
@@ -429,16 +477,24 @@ if __name__ == '__main__':
             if args.use_gpu:
                 train_queue_pair = [k.cuda() for k in train_queue_pair]
             train_queue_pair[3] = train_queue_pair[3].to_sparse()
-            train_queue_pair[4] = train_queue_pair[4].to_sparse()
+            train_queue_pair[4] = train_queue_pair[4].to_sparse() 
+
+            if args.use_gpu:
+                test_queue = [k.cuda() for k in test_queue]
+            test_queue[3] = test_queue[3].to_sparse()
+            test_queue[4] = test_queue[4].to_sparse()
         else:
             pass
 
+        # evaluate on all users
         all_users = torch.tensor(list(range(num_users)), dtype=torch.int64).repeat_interleave(num_items)
-        all_items = torch.tensor(list(range(num_items)), dtype=torch.int64).repeat(num_users)
-        with torch.cuda.device(args.device):
-            all_users = all_users.cuda()
-            all_items = all_items.cuda()
-
+        all_items = torch.tensor(list(range(num_items)), dtype=torch.int64).repeat(num_users) # shape (#users * #items)
+        if args.data_type == 'implicit':
+            with torch.cuda.device(args.device):
+                all_users = all_users.cuda() # add gpu memory, used when evaluate
+                all_items = all_items.cuda()
+                # pass
+        start_train = time()
         for train_epoch in range(args.train_epochs):
             # 训练
             if args.data_type == 'explicit': # 用不到
@@ -454,18 +510,21 @@ if __name__ == '__main__':
                     if args.data_type == 'explicit':
                         rmse = evaluate_cf_efficiently(model, test_queue, sparse='ui')
                     else:
-                        rmse = evaluate_cf_efficiently_implicit(model, test_queue, all_users, all_items, args)
+                        rmse = evaluate_cf_efficiently_implicit(model, test_queue, all_users, all_items, args) 
                 else: # 使用GMF,MLP等普通模型
-                    if args.data_type == 'explicit':
-                        rmse = evaluate_cf_efficiently(model, test_queue, sparse='')
+                    if (train_epoch+1) % 100 == 0:
+                        if args.data_type == 'explicit':
+                            rmse = evaluate_cf_efficiently(model, test_queue, sparse='')
+                        else:
+                            rmse, ndcg  = evaluate_cf_efficiently_implicit_minibatch(model, test_queue, args, num_items, args.device) 
+                            # rmse  = evaluate_cf_efficiently_implicit(model, test_queue, all_users, all_items, args) # debugging，实际返回值是recall < 1
                     else:
-                        # rmse, ndcg  = evaluate_cf_efficiently_implicit_minibatch(model, test_queue, args, num_items, args.device) 
-                        rmse  = evaluate_cf_efficiently_implicit(model, test_queue, all_users, all_items, args) # debugging，实际返回值是recall < 1
+                        rmse = 0.0
             performances.append(rmse)
             if args.data_type == 'explicit':
-                logging.info('train_epoch: %d, loss: %.4f, rmse: %.4f[%.4f]' % (train_epoch, loss, rmse, time()-start))
+                logging.info('train_epoch: %d, loss: %.4f, rmse: %.4f[%.4f]' % (train_epoch, loss, rmse, time()-start_train))
             elif args.data_type == 'implicit':
-                logging.info('train_epoch: %d, loss: %.4f, recall20: %.4f[%.4f]' % (train_epoch, loss, rmse, time()-start))
+                logging.info('train_epoch: %d, loss: %.4f, recall20: %.4f[%.4f]' % (train_epoch, loss, rmse, time()-start_train))
             else:
                 pass
             

@@ -7,4 +7,13 @@
 /AutoCF-src
 /data
 /__pycache__
-
+/bore_meta
+/box_violin_plot
+/emb_random
+/lr_random
+/sample_random
+/save/log
+/save/log_sub
+/save/tensorboard
+/save/tensorboard_sub
+*.txt

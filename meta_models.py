@@ -13,7 +13,7 @@ class MLP(nn.Module):
         self.embedding6 = nn.Embedding(4, embedding_dim)
         self.embedding7 = nn.Embedding(4, embedding_dim)
         self.W = nn.Linear(embedding_dim * 7, 1, bias=False)
-        self.reg = reg
+        self.reg = reg # what is reg?
 
     def forward(self, input):
         [e1, e2, e3, e4, e5, e6, e7] = input

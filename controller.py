@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
-from models import CF_MODEL, CF_EMB, CF_IFC, CF_PRED
+from models import CF_MODEL, CF_EMB, CF_IFC, CF_PRED, CF_EMB_LIST
 from itertools import chain
 
 
@@ -53,7 +53,7 @@ def sample_arch_cf(cf_model_num=1):
         arch_cf['emb']['i'] = 'mat'
     elif arch_cf['cf'] == 'ur':
         arch_cf['emb']['u'] = 'mat'
-        arch_cf['emb']['i'] = CF_EMB[np.random.randint(len(CF_EMB))]
+        arch_cf['emb']['i'] = CF_EMB[np.random.randint(len(CF_EMB))]#CF_EMB = ['mat', 'mlp']
     elif arch_cf['cf'] == 'ri':
         arch_cf['emb']['u'] = CF_EMB[np.random.randint(len(CF_EMB))]
         arch_cf['emb']['i'] = 'mat'
@@ -63,6 +63,132 @@ def sample_arch_cf(cf_model_num=1):
     arch_cf['ifc'] = CF_IFC[np.random.randint(len(CF_IFC))]
     arch_cf['pred'] = CF_PRED[np.random.randint(len(CF_PRED))]
     return arch_cf
+
+def sample_arch_cf_ifc(ifc_mode): 
+    '''
+    针对emb部分进行sample，根据arch_cf['cf']进行分类
+    '''
+    
+    CF_IFC = ['max', 'min', 'plus', 'mul', 'concat'] # Interacton
+    if ifc_mode not in CF_IFC:
+        print("错误")
+        return []
+    arch_cf_list = []
+    # arch_cf = dict()
+    arch_cf = {'cf':'', 
+                'emb':{'u':'', 'i':''},
+                'ifc':'',
+                'pred':''}
+    arch_cf['ifc'] = ifc_mode
+    CF_MODEL = ['ui', 'ur', 'ri', 'rr'] # Input Encoding
+    CF_EMB = ['mat', 'mlp'] # Embedding Function
+    CF_PRED = ['i', 'h', 'mlp'] # Prediction Function
+    
+    for pred in CF_PRED:
+        # arch_cf['ifc'] = CF_IFC[np.random.randint(len(CF_IFC))]
+        # arch_cf['pred'] = CF_PRED[np.random.randint(len(CF_PRED))]
+        arch_cf['pred'] = pred
+        for cf in CF_MODEL:
+            arch_cf['cf'] = cf
+            # arch_cf['emb'] = dict()
+
+            if arch_cf['cf'] == 'ui':
+                arch_cf['emb']['u'] = 'mat'
+                arch_cf['emb']['i'] = 'mat'
+                arch_cf_list.append(arch_cf)
+            elif arch_cf['cf'] == 'ur':
+                arch_cf['emb']['u'] = 'mat'
+                for iemb in CF_EMB:
+                    arch_cf['emb']['i'] = iemb
+                    arch_cf_list.append(arch_cf)
+            elif arch_cf['cf'] == 'ri':
+                for uemb in CF_EMB:
+                    arch_cf['emb']['u'] = uemb
+                    arch_cf_list.append(arch_cf)
+                arch_cf['emb']['i'] = 'mat'
+            else:
+                for uemb in CF_EMB:
+                    for iemb in CF_EMB:
+                        arch_cf['emb']['u'] = uemb
+                        arch_cf['emb']['i'] = iemb
+                        arch_cf_list.append(arch_cf)
+                
+    return arch_cf_list
+
+
+def sample_arch_cf_pred(pred_mode): 
+    '''
+    根据arch_cf['pred']进行分类
+    '''
+    # CF_MODEL = ['ui', 'ur', 'ri', 'rr'] # Input Encoding
+    # CF_EMB = ['mat', 'mlp'] # Embedding Function
+    # CF_PRED = ['i', 'h', 'mlp'] # Prediction Function
+    # CF_PRED = ['i', 'h', 'mlp'] # Interacton
+    if pred_mode not in CF_PRED:
+        print("输入错误")
+        return []
+    arch_cf_list = []
+    arch_cf = {'cf':'', 
+                'emb':{'u':'', 'i':''},
+                'ifc':'',
+                'pred':''}
+    arch_cf['pred'] = pred_mode
+    
+    for ifc in CF_IFC:
+        arch_cf['ifc'] = ifc
+        # arch_cf['pred'] = CF_PRED[np.random.randint(len(CF_PRED))]
+        for cf in CF_MODEL:
+            arch_cf['cf'] = cf
+            if arch_cf['cf'] == 'ui':
+                arch_cf['emb']['u'] = 'mat'
+                arch_cf['emb']['i'] = 'mat'
+                arch_cf_list.append(arch_cf)
+            elif arch_cf['cf'] == 'ur':
+                arch_cf['emb']['u'] = 'mat'
+                for iemb in CF_EMB:
+                    arch_cf['emb']['i'] = iemb
+                    arch_cf_list.append(arch_cf)
+            elif arch_cf['cf'] == 'ri':
+                for uemb in CF_EMB:
+                    arch_cf['emb']['u'] = uemb
+                    arch_cf_list.append(arch_cf)
+                arch_cf['emb']['i'] = 'mat'
+            else:
+                for uemb in CF_EMB:
+                    for iemb in CF_EMB:
+                        arch_cf['emb']['u'] = uemb
+                        arch_cf['emb']['i'] = iemb
+                        arch_cf_list.append(arch_cf)
+                
+    return arch_cf_list
+
+def sample_arch_cf_emb(cf_pred_mode): 
+    '''
+    根据arch_cf['pred']进行分类
+    '''
+    # CF_EMB_LIST = ['ui_mat_mat', 
+    #                 'ur_mat_mat', 'ur_mat_mlp',
+    #                 'ri_mat_mat', 'ri_mlp_mat',
+    #                 'rr_mat_mat', 'rr_mat_mlp',
+    #                 'rr_mlp_mlp', 'rr_mlp_mat',] 
+    if cf_pred_mode not in CF_EMB_LIST:
+        print("输入错误")
+        return []
+    arch_cf_list = []
+    arch_cf = {'cf':'', 
+                'emb':{'u':'', 'i':''},
+                'ifc':'',
+                'pred':''}
+    arch_cf['cf'], arch_cf['emb']['u'], arch_cf['emb']['i'] = cf_pred_mode.split('_')
+    
+    for ifc in CF_IFC:
+        arch_cf['ifc'] = ifc
+        # arch_cf['pred'] = CF_PRED[np.random.randint(len(CF_PRED))]
+        for pred in CF_PRED:
+            arch_cf['pred'] = pred
+            arch_cf_list.append(arch_cf)
+                
+    return arch_cf_list
 
 
 def sample_arch_cf_test(num=0):

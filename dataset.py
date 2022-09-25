@@ -269,7 +269,11 @@ def get_data_queue_cf_nonsparse(data_path, args):
 
     num_users = max(users) + 1
     num_items = max(items) + 1
+    # num_users = args.num_users
+    # num_items = args.num_items
+    print(num_users, num_items)
 
+    print()
     if not args.minibatch:
         user_ratings, item_ratings = \
             convert_records_to_rating_nonsparse(
@@ -414,6 +418,9 @@ def get_data_queue_efficiently(data_path, args):
         data_path += 'ratings-1m.dat'
     elif args.dataset == 'yelp-all':
         data_path += 'ratings-all.dat'
+    elif args.dataset == 'yelp-all2':
+        data_path += 'ratings-all2.dat'
+    
 
     data_path = 'data/' + data_path
 
@@ -450,11 +457,16 @@ def get_data_queue_efficiently(data_path, args):
 
     num_users = max(users) + 1
     num_items = max(items) + 1
+    # user_interactions = torch.from_numpy(sp.coo_matrix(
+    #     (labels_train, (users_train, items_train)), shape=(num_users, num_items)).tocsr().toarray())
+    # item_interactions = torch.from_numpy(sp.coo_matrix(
+    #     (labels_train, (items_train, users_train)), shape=(num_items, num_users)).tocsr().toarray())
     user_interactions = torch.from_numpy(sp.coo_matrix(
-        (labels_train, (users_train, items_train)), shape=(num_users, num_items)).tocsr().toarray())
+        (labels_train, (users_train, items_train)), shape=(num_users, num_items)).toarray())
     item_interactions = torch.from_numpy(sp.coo_matrix(
-        (labels_train, (items_train, users_train)), shape=(num_items, num_users)).tocsr().toarray())
+        (labels_train, (items_train, users_train)), shape=(num_items, num_users)).toarray())
 
+    print(type(user_interactions)) # class tensor
 
     train_queue = [torch.tensor(users[:num_train]),
                    torch.tensor(items[:num_train]),
@@ -475,7 +487,7 @@ def get_data_queue_efficiently(data_path, args):
 
 
 def get_data_queue_negsampling_efficiently(data_path, args):
-    '''implicit数据集组织方法'''
+    '''implicit数据集组织方法, original graph'''
     users, items, labels = [], [], []
     if args.dataset == 'ml-100k':
         data_path += 'u.data'
@@ -484,8 +496,8 @@ def get_data_queue_negsampling_efficiently(data_path, args):
     elif args.dataset == 'ml-20m':
         data_path += 'ratings.csv'
     elif args.dataset == 'amazon-book':
-        # data_path += 'ratings2.dat'
-        data_path += 'ratings_Books.csv'
+        data_path += 'ratings.dat'
+        # data_path += 'ratings_Books.csv'
     elif args.dataset == 'yelp':
         data_path += 'ratings.dat'
     elif args.dataset == 'yelp2':
@@ -527,6 +539,7 @@ def get_data_queue_negsampling_efficiently(data_path, args):
     users, items, labels = shuffle(users, items, labels)
     num_train = int(len(users) * args.train_portion)
     num_valid = int(len(users) * args.valid_portion)
+    print(len(labels))
 
     users_train = np.array(users[:num_train], dtype=np.int32)
     items_train = np.array(items[:num_train], dtype=np.int32)
@@ -534,8 +547,12 @@ def get_data_queue_negsampling_efficiently(data_path, args):
 
     num_users = max(users) + 1
     num_items = max(items) + 1
+    # num_users = args.num_users
+    # num_items = args.num_items
+    print(f'{num_users}, {num_items} in dataset.py')
     user_interactions = torch.from_numpy(sp.coo_matrix(
         (labels_train, (users_train, items_train)), shape=(num_users, num_items)).tocsr().toarray())
+    # print(f'user_interactions type: {type(user_interactions)}, shape: {user_interactions.shape} from dataset.py')
     item_interactions = torch.from_numpy(sp.coo_matrix(
         (labels_train, (items_train, users_train)), shape=(num_items, num_users)).tocsr().toarray())
     a = time.time()
@@ -552,7 +569,8 @@ def get_data_queue_negsampling_efficiently(data_path, args):
                         torch.tensor(items[:num_train]),
                         negs_train,
                         user_interactions, item_interactions]
-
+    import sys
+    print(f'size train queue: {sys.getsizeof(train_queue_pair)}')
     valid_queue = [torch.tensor(users[num_train:num_train+num_valid]),
                    torch.tensor(items[num_train:num_train+num_valid]),
                    torch.tensor(labels[num_train:num_train+num_valid]),
@@ -572,8 +590,9 @@ def get_data_queue_negsampling_efficiently(data_path, args):
     return train_queue_pair, valid_queue, test_queue
 
 
-def get_data_queue_subsampling_efficiently(data_path, args):
-    '''implicit数据集组织方法'''
+def get_data_queue_subsampling_efficiently(data_path, args, item_down_sample_portion=0.2):
+    '''implicit数据集组织方法, subgraph'''
+    item_down_sample_portion = args.sample_portion
     users, items, labels = [], [], []
     if args.dataset == 'ml-100k':
         data_path += 'u.data'
@@ -582,8 +601,8 @@ def get_data_queue_subsampling_efficiently(data_path, args):
     elif args.dataset == 'ml-20m':
         data_path += 'ratings.csv'
     elif args.dataset == 'amazon-book':
-        # data_path += 'ratings2.dat'
-        data_path += 'ratings_Books.csv'
+        data_path += 'ratings.dat'
+        # data_path += 'ratings_Books.csv'
     elif args.dataset == 'yelp':
         data_path += 'ratings.dat'
         # data_path += 'ratings_100k_num.dat'
@@ -609,13 +628,49 @@ def get_data_queue_subsampling_efficiently(data_path, args):
             user = int(line[0]) - 1 if args.dataset != 'amazon-book' and args.dataset != 'yelp' and args.dataset != 'yelp2' else int(line[0])
             item = int(line[1]) - 1 if args.dataset != 'amazon-book' and args.dataset != 'yelp' and args.dataset != 'yelp2' else int(line[1])
             label = float(line[2])
+            # print(user)
             users.append(user)
             items.append(item)
             labels.append(label)
 
+    print('\n[Origin data]')
     users, items, labels = shuffle(users, items, labels)
     num_train = int(len(users) * args.train_portion)
     num_valid = int(len(users) * args.valid_portion)
+    print("num_train: {}, num_valid: {}".format(num_train, num_valid))
+
+    # users_train = np.array(users[:num_train], dtype=np.int32)
+    # items_train = np.array(items[:num_train], dtype=np.int32)
+    # labels_train = np.array(labels[:num_train], dtype=np.float32)
+
+    num_users = max(users) + 1
+    num_items = max(items) + 1
+    # num_users = args.num_users
+    # num_items = args.num_items
+    # print('num_users',num_users,'num_items', num_items)
+    print("num_users: {}, num_items: {}".format(num_users,num_items))
+
+
+    user_interactions = torch.from_numpy(sp.coo_matrix(
+        (labels, (users, items)), shape=(num_users, num_items)).tocsr().toarray())
+    item_interactions = torch.from_numpy(sp.coo_matrix((labels, (items, users)), shape=(num_items, num_users)).tocsr().toarray())
+    # print('item_interactions', item_interactions[:5,:5])
+    print("user_interactions.shape: {}".format(user_interactions.shape))
+    print("item_interactions.shape: {}".format(item_interactions.shape))    
+    a = time.time()
+
+    if args.sample_mode == 'topk':
+        users_sampled, items_sampled, labels_sampled = subample_from_item_interaction_freq(item_interactions, item_down_sample_portion)
+    elif args.sample_mode == 'distribute':
+        users_sampled, items_sampled, labels_sampled = subample_from_item_freq_distributed(item_interactions, item_down_sample_portion)
+    else: # default topk
+        users_sampled, items_sampled, labels_sampled = subample_from_item_interaction_freq(item_interactions, item_down_sample_portion)
+    
+    print('\n[Sampled data]')
+    users, items, labels = shuffle(users_sampled, items_sampled, labels_sampled)
+    num_train = int(len(users) * args.train_portion)
+    num_valid = int(len(users) * args.valid_portion)
+    print("num_train: {}, num_valid: {}".format(num_train, num_valid))
 
     users_train = np.array(users[:num_train], dtype=np.int32)
     items_train = np.array(items[:num_train], dtype=np.int32)
@@ -623,17 +678,26 @@ def get_data_queue_subsampling_efficiently(data_path, args):
 
     num_users = max(users) + 1
     num_items = max(items) + 1
+    args.num_users = num_users
+    args.num_items = num_items  
+    # print('num_users',num_users,'num_items', num_items)
+    print("num_users: {}, num_items: {}".format(num_users,num_items))
+
     user_interactions = torch.from_numpy(sp.coo_matrix(
         (labels_train, (users_train, items_train)), shape=(num_users, num_items)).tocsr().toarray())
     item_interactions = torch.from_numpy(sp.coo_matrix(
         (labels_train, (items_train, users_train)), shape=(num_items, num_users)).tocsr().toarray())
-    a = time.time()
+    # print('item_interactions', item_interactions[:5,:5])
+    print("user_interactions.shape: {}".format(user_interactions.shape))
+    print("item_interactions.shape: {}".format(item_interactions.shape))
+
+    
     negs_train = np.zeros(len(labels_train), dtype=np.int64)
-    for k in range(len(labels_train)):
+    for k in range(len(labels_train)):# users_train中的用户遍历 
         neg = np.random.randint(num_items)
         while user_interactions[users_train[k], neg] != 0:
-            neg = np.random.randint(num_items)
-        negs_train[k] = neg
+            neg = np.random.randint(num_items) # neg是未与此uk交互的item的index, random negetive sampler
+        negs_train[k] = neg # 得到的neg满足user_interactions[users_train[k], neg] == 0
     negs_train = torch.from_numpy(negs_train)
 
 
@@ -661,3 +725,203 @@ def get_data_queue_subsampling_efficiently(data_path, args):
     return train_queue_pair, valid_queue, test_queue
 
 
+def get_data_queue_subsampling_efficiently_explicit(data_path, args, item_down_sample_portion=0.2):
+    '''explicit, subsample'''
+    item_down_sample_portion = args.sample_portion
+    users, items, labels = [], [], []
+    if args.dataset == 'ml-100k':
+        data_path += 'u.data'
+    elif args.dataset == 'ml-1m' or args.dataset == 'ml-10m':
+        data_path += 'ratings.dat'
+    elif args.dataset == 'ml-20m':
+        data_path += 'ratings.csv'
+    elif args.dataset == 'amazon-book':
+        data_path += 'ratings.dat'
+        # data_path += 'ratings_Books.csv'
+    elif args.dataset == 'yelp':
+        data_path += 'ratings.dat'
+        # data_path += 'ratings_100k_num.dat'
+    elif args.dataset == 'yelp2':
+        data_path += 'ratings.dat'
+
+    data_path = 'data/' + data_path
+
+    with open(data_path, 'r') as f:
+        for i, line in enumerate(f.readlines()):
+            if args.dataset == 'ml-100k':
+                line = line.split()
+            elif args.dataset == 'ml-1m' or args.dataset == 'ml-10m':
+                line = line.split('::')
+            elif args.dataset == 'ml-20m':
+                if i == 0:
+                    continue
+                line = line.split(',')
+            elif args.dataset == 'amazon-book':
+                line = line.split(',')
+            elif args.dataset == 'yelp' or 'yelp2':
+                line = line.split(',')
+            user = int(line[0]) - 1 if args.dataset != 'amazon-book' and args.dataset != 'yelp' and args.dataset != 'yelp2' else int(line[0])
+            item = int(line[1]) - 1 if args.dataset != 'amazon-book' and args.dataset != 'yelp' and args.dataset != 'yelp2' else int(line[1])
+            label = float(line[2])
+            # print(user)
+            users.append(user)
+            items.append(item)
+            labels.append(label)
+
+    print('\n[Origin data]')
+    labels = StandardScaler().fit_transform(np.reshape(labels, [-1, 1])).flatten().tolist()
+    users, items, labels = shuffle(users, items, labels)
+    num_train = int(len(users) * args.train_portion)
+    num_valid = int(len(users) * args.valid_portion)
+    print("num_train: {}, num_valid: {}".format(num_train, num_valid))
+
+    num_users = max(users) + 1
+    num_items = max(items) + 1
+    print("num_users: {}, num_items: {}".format(num_users,num_items))
+
+
+    user_interactions = torch.from_numpy(sp.coo_matrix(
+        (labels, (users, items)), shape=(num_users, num_items)).tocsr().toarray())
+    item_interactions = torch.from_numpy(sp.coo_matrix(
+        (labels, (items, users)), shape=(num_items, num_users)).tocsr().toarray())
+    # print('item_interactions', item_interactions[:5,:5])
+    print("user_interactions.shape: {}".format(user_interactions.shape))
+    print("item_interactions.shape: {}".format(item_interactions.shape))    
+    a = time.time()
+
+    if args.sample_mode == 'topk':
+        users_sampled, items_sampled, labels_sampled = subample_from_item_interaction_freq(item_interactions, item_down_sample_portion)
+    elif args.sample_mode == 'distribute':
+        users_sampled, items_sampled, labels_sampled = subample_from_item_freq_distributed(item_interactions, item_down_sample_portion)
+    else:
+        users_sampled, items_sampled, labels_sampled = subample_from_item_interaction_freq(item_interactions, item_down_sample_portion)
+    
+    print('\n[Sampled data]')
+    users, items, labels = shuffle(users_sampled, items_sampled, labels_sampled)
+    num_train = int(len(users) * args.train_portion)
+    num_valid = int(len(users) * args.valid_portion)
+    print("num_train: {}, num_valid: {}".format(num_train, num_valid))
+
+    users_train = np.array(users[:num_train], dtype=np.int32)
+    items_train = np.array(items[:num_train], dtype=np.int32)
+    labels_train = np.array(labels[:num_train], dtype=np.float32)
+
+    num_users = max(users) + 1
+    num_items = max(items) + 1
+    args.num_users = num_users
+    args.num_items = num_items  
+    # print('num_users',num_users,'num_items', num_items)
+    print("num_users: {}, num_items: {}".format(num_users,num_items))
+
+    user_interactions = torch.from_numpy(sp.coo_matrix(
+        (labels_train, (users_train, items_train)), shape=(num_users, num_items)).tocsr().toarray())
+    item_interactions = torch.from_numpy(sp.coo_matrix(
+        (labels_train, (items_train, users_train)), shape=(num_items, num_users)).tocsr().toarray())
+    # print('item_interactions', item_interactions[:5,:5])
+    print("user_interactions.shape: {}".format(user_interactions.shape))
+    print("item_interactions.shape: {}".format(item_interactions.shape))
+
+
+    train_queue = [torch.tensor(users[:num_train]),
+                    torch.tensor(items[:num_train]),
+                    torch.tensor(labels[:num_train], dtype=torch.float32),
+                    user_interactions, item_interactions]
+
+    valid_queue = [torch.tensor(users[num_train:num_train+num_valid]),
+                   torch.tensor(items[num_train:num_train+num_valid]),
+                   torch.tensor(labels[num_train:num_train+num_valid], dtype=torch.float32),
+                   user_interactions, item_interactions]
+
+    test_queue = [torch.tensor(users[num_train+num_valid:]),
+                  torch.tensor(items[num_train+num_valid:]),
+                  torch.tensor(labels[num_train+num_valid:], dtype=torch.float32),
+                  user_interactions, item_interactions]
+    return train_queue, valid_queue, test_queue
+
+
+def subample_from_item_interaction_freq(item_interactions, item_down_sample_portion=0.2):
+    item_freqency = torch.sum(item_interactions > 0.0, axis=1)
+    num_items = item_freqency.shape[0]
+    print("item_freqency.shape: {}".format(item_freqency.shape))
+    item_freqency_sorted, item_freqency_indices = torch.sort(item_freqency,descending=True)
+    # print(item_freqency_sorted, item_freqency_indices)
+    # print(len(item_freqency_sorted), len(item_freqency_indices))
+    
+    
+    sample_cnt = int(num_items * item_down_sample_portion)
+    item_freqency_indices, _ = torch.sort(item_freqency_indices) # added
+    item_sampled = item_freqency_indices.numpy().tolist()[:sample_cnt] # 直接选取靠前的数字
+    item_interactions_sampled = item_interactions[item_sampled,:]
+    item_interactions_sampled = item_interactions_sampled[item_interactions_sampled.sum(axis=1) != 0.0,:]
+    print("item_interactions_sampled.shape: {}".format(item_interactions_sampled.shape)) # 假设users不变
+    user_interactions_sampled = item_interactions_sampled.T
+    # print("user_interactions_sampled.shape: {}".format(user_interactions_sampled.shape))
+
+    num_users_sampled = item_interactions_sampled.shape[1]
+    num_items_sampled = item_interactions_sampled.shape[0]
+    users_sampled, items_sampled, labels_sampled = [],[],[]
+    interaction_sampled_cnt = 0 # 32366
+    for row in range(num_items_sampled):
+        for col in range(num_users_sampled):
+            if item_interactions_sampled[row][col] > 0.0:
+                items_sampled.append(row)
+                users_sampled.append(col)
+                labels_sampled.append(item_interactions_sampled[row][col])
+                interaction_sampled_cnt += 1
+    return users_sampled, items_sampled, labels_sampled
+
+def subample_from_item_freq_distributed(item_interactions, item_down_sample_portion=0.2):
+    # 
+    item_freqency = torch.sum(item_interactions > 0.0, axis=1)
+    num_items = item_freqency.shape[0]
+    # print("item_freqency.shape: {}".format(item_freqency.shape))
+    # item_freqency_sorted, item_freqency_indices = torch.sort(item_freqency,descending=True)
+    
+    # TODO: get sub-matrix from original item-based interaction matrix 
+    # get indices of items you want to sample
+    sample_cnt = int(num_items * item_down_sample_portion)
+    # item_freqency_indices, _ = torch.sort(item_freqency_indices) # added
+    # item_sampled = item_freqency_indices.numpy().tolist()[:sample_cnt]  #
+    item_sample_prob = item_freqency / torch.sum(item_freqency)
+    # print("item_sample_prob[:20]: {}, min: {}, max: {}, sum: {}".format(item_sample_prob[:20], torch.min(item_sample_prob), torch.max(item_sample_prob), torch.sum(item_sample_prob)))
+    item_sampled = np.random.choice(a=np.linspace(0,num_items-1, num_items), size=sample_cnt, replace=False, p=item_sample_prob) # choose by the probability of freq
+    # print('item_sampled[:20]: {}'.format(item_sampled[:20]))
+    
+    # get sub-matrix  
+    item_interactions_sampled = item_interactions[item_sampled,:]
+    item_interactions_sampled = item_interactions_sampled[item_interactions_sampled.sum(axis=1) != 0.0,:] # 假设users不变
+    print("item_interactions_sampled.shape: {}".format(item_interactions_sampled.shape)) 
+    # user_interactions_sampled = item_interactions_sampled.T
+    # print("user_interactions_sampled.shape: {}".format(user_interactions_sampled.shape))
+
+    # assemble subsampled user item rating list
+    num_users_sampled = item_interactions_sampled.shape[1]
+    num_items_sampled = item_interactions_sampled.shape[0]
+    users_sampled, items_sampled, labels_sampled = [],[],[]
+    interaction_sampled_cnt = 0 # 32366
+    for row in range(num_items_sampled):
+        for col in range(num_users_sampled):
+            if item_interactions_sampled[row][col] > 0.0:
+                items_sampled.append(row)
+                users_sampled.append(col)
+                labels_sampled.append(item_interactions_sampled[row][col])
+                interaction_sampled_cnt += 1
+    return users_sampled, items_sampled, labels_sampled
+
+
+def get_laplace_matrix_from_ratings(R, num_users, num_items):
+    # R = R.cpu()
+    zero_num_users = torch.zeros(num_users, num_users)
+    zero_num_items = torch.zeros(num_items, num_items)
+    adj_mat = torch.concat([torch.concat([zero_num_users, R], dim=1),
+                            torch.concat([R.T, zero_num_items], dim=1)], dim=0) 
+    # adjacency matrix
+    user_freqency = torch.sum(R > 0.0, axis=1) # train
+    item_freqency = torch.sum(R > 0.0, axis=0)
+    freq_tensor = torch.concat([user_freqency, item_freqency], dim=0)
+    degree_diag = torch.diag(freq_tensor) # degree
+    degree_diag_calc = torch.diag(freq_tensor**(-1/2)) # D^(-1/2)
+    degree_diag_calc = torch.where(torch.isinf(degree_diag_calc), torch.full_like(degree_diag_calc, 0), degree_diag_calc)
+
+    laplace_mat = degree_diag_calc @ adj_mat @ degree_diag_calc # L
+    return laplace_mat

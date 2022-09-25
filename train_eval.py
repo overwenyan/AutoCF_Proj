@@ -12,7 +12,7 @@ import random
 from tensorboardX import SummaryWriter
 import math
 
-# train 
+# train  both implicit and explicit
 def train_single_cf_efficiently(train_queue, model, optimizer, args, sparse=''):
     '''train explicit&implicit data， 调用函数train一次，返回loss，并进行梯度计算'''
     if args.loss_func == 'logloss' or args.data_type == 'explicit':
@@ -21,9 +21,11 @@ def train_single_cf_efficiently(train_queue, model, optimizer, args, sparse=''):
         model.train()
         optimizer.zero_grad()
         model.zero_grad()
+        # items_ratings_train = users_ratings_train.T
         inferences, regs = model(users_train, items_train, users_ratings_train, items_ratings_train)
         loss = model.compute_loss(inferences, labels_train, regs)
         # loss = loss.to(torch.float32) # modified yan
+        # loss = loss.float()
         loss.backward()
         optimizer.step()
         if args.use_gpu:
@@ -36,6 +38,7 @@ def train_single_cf_efficiently(train_queue, model, optimizer, args, sparse=''):
         model.train()
         optimizer.zero_grad()
         model.zero_grad()
+        # items_ratings_train = users_ratings_train.T
         inferences, regs = model.forward_pair(users_train, items_train, negs_train, users_ratings_train, items_ratings_train)
         # print("inferences.shape: {}, regs: {}".format(inferences.shape, regs) )
         loss = model.compute_loss_pair(inferences, regs)
@@ -51,7 +54,9 @@ def train_single_cf_efficiently(train_queue, model, optimizer, args, sparse=''):
 
 # some metric
 def DCG(hit: torch.Tensor, topk: int, device: torch.device = torch.device('cpu')) -> torch.Tensor:
-    hit = hit/torch.log2(torch.arange(2, topk+2, device=device, dtype=torch.float))
+    # print('hit.shape: {}, topk: {} from DCG()'.format(hit.shape, topk))
+    # hit = hit[:topk]
+    hit = hit / torch.log2(torch.arange(2, topk+2, device=device, dtype=torch.float))
     return hit.sum(-1)
 
 def IDCG(num_pos: int, topk: int) -> torch.Tensor:
@@ -62,36 +67,43 @@ def IDCG(num_pos: int, topk: int) -> torch.Tensor:
 def get_rank_metrics(scores, ground_truth, topk, metric='Recall'):
     if metric == 'Recall':
         device = scores.device
-        _, col_indice = torch.topk(scores, topk)
-        row_indice = torch.zeros_like(col_indice) + torch.arange(
-            scores.shape[0], device=device, dtype=torch.long).view(-1, 1)
+        # print('scores.shape: {} from recall'.format(scores.shape))
+        _, col_indice = torch.topk(scores, k=topk)
+        row_indice = torch.zeros_like(col_indice) \
+                    + torch.arange(scores.shape[0], device=device, dtype=torch.long).view(-1, 1)
         is_hit = ground_truth[row_indice.view(-1), col_indice.view(-1)].view(-1, topk)
-        is_hit = is_hit.sum(dim=1)
-        num_pos = ground_truth.sum(dim=1)
+        is_hit = is_hit.sum(dim=1) # is_hit has the size of user
+        # print('is_hit.shape: {} from recall'.format(is_hit.shape))
+        num_pos = ground_truth.sum(dim=1)  # positive
         _cnt = scores.shape[0] - (num_pos == 0).sum().item()
         _sum = (is_hit/(num_pos+1e-8)).sum().item()
         return _sum, _cnt
-    else:
+    else: # ndcg
         IDCGs = torch.empty(1 + topk, dtype=torch.float)
         IDCGs[0] = 1  # avoid 0/0
         for i in range(1, topk + 1):
-            IDCGs[i] = IDCG(i,topk)
+            IDCGs[i] = IDCG(i, topk)
 
         device = scores.device
-        _, col_indice = torch.topk(scores, topk)
+        print('scores.shape: {} from ndcg, scores.device: {}'.format(scores.shape, scores.device))
+        _, col_indice = torch.topk(scores, k=topk)
         row_indice = torch.zeros_like(col_indice) + torch.arange(
             scores.shape[0], device=device, dtype=torch.long).view(-1, 1)
         is_hit = ground_truth[row_indice.view(-1), col_indice.view(-1)].view(-1, topk)
         is_hit = is_hit.sum(dim=1)
+        print('is_hit.shape: {} from ndcg'.format(is_hit.shape))
         num_pos = ground_truth.sum(dim=1).clamp(0, topk).to(torch.long)
-        print("is_hit: {}, size: {}".format(is_hit, is_hit.shape))
-        print("topk: {}".format(topk))
-        dcg = DCG(is_hit, topk, device)
+        # print("num_pos.shape: {}, IDCGs[num_pos].shape: {}".format(num_pos.shape, IDCGs[num_pos].shape))
+        is_hit = is_hit[:topk].to(device) # rel_i, modified
+        dcg = DCG(is_hit, topk, device) # problem of topk
+        # dcg = DCG(is_hit.to(device), scores.shape[0], device)# modified
         idcg = IDCGs[num_pos]
         ndcg = dcg/idcg.to(device)
+        print('ndcg for every user: {}'.format(ndcg.shape))
         _cnt = scores.shape[0] - (num_pos == 0).sum().item()
         _sum = ndcg.sum().item()
-        return sum / _cnt
+        # print(_sum, _cnt)
+        return _sum / _cnt # avg user ndcg@20
 
 
 # for evaluation
@@ -100,6 +112,8 @@ def evaluate_cf_efficiently(model, test_queue, sparse=''):
     model.eval()
     users, items, labels, users_ratings, items_ratings = test_queue
     inferences, _ = model(users, items, users_ratings, items_ratings)
+    # print('inferences from evaluate_cf_efficiently: max {}, min {} mean {}'.format(torch.max(inferences), torch.min(inferences), torch.mean(inferences)))
+    # print('labels from evaluate_cf_efficiently: max {}, min {} mean {}'.format(torch.max(torch.reshape(labels, [-1, 1])), torch.min(torch.reshape(labels, [-1, 1])), torch.mean(torch.reshape(labels, [-1, 1]))))
     mse = F.mse_loss(inferences, torch.reshape(labels, [-1, 1]))
     rmse = torch.sqrt(mse)
     if 1 == 1:
@@ -113,33 +127,39 @@ def evaluate_cf_efficiently_implicit(model, test_queue, all_users, all_items, ar
     users, items, labels, users_ratings, items_ratings = test_queue
     users_ratings = users_ratings.cuda()
     items_ratings = items_ratings.cuda()
-    inferences, _ = model(all_users, all_items, users_ratings, items_ratings)
-    # inferences = inferences.cuda()
+    # items_ratings = users_ratings.T
+
+    with torch.no_grad():
+        inferences, _ = model(all_users, all_items, users_ratings, items_ratings) # only forward one time
+        # why all users all items
+        inferences, _ = model(users, items, users_ratings, items_ratings)
     inferences_reshaped = inferences.reshape(args.num_users, args.num_items)
-    users_ratings = users_ratings.cuda()
-    train_mask = users_ratings.to_sparse().to_dense() #待改正错误ok
+    train_mask = users_ratings.cuda()
+    # print('users_ratings: {} {}'.format(users_ratings, type(users_ratings)))
+    # train_mask = users_ratings.to_sparse().to_dense() #待改正错误 done
     # print('train_mask: {}'.format(train_mask))
     final_inferences = inferences_reshaped - train_mask * 1e10
-    users_test, items_test, labels_test = test_queue[0:3]
+    # print('final_inferences: {}, final_inferences.shape: {}'.format(final_inferences, final_inferences.shape))
+    # users_test, items_test, labels_test = test_queue[0:3]
     # recall_20 = get_rank_metrics(final_inferences, labels, 20)
     recall_20_sum, recall_20_cnt = get_rank_metrics(final_inferences, labels, 20, metric='Recall')
     recall_20 = recall_20_sum / recall_20_cnt #modified
     # print("recall_20: {}".format(recall_20))
-
+    
     # ndcg20 = get_rank_metrics(final_inferences, labels, 20, metric='NDCG')
     # print("ndcg20: {}".format(ndcg20))
     # return recall_20, ndcg20
     return recall_20
     
 def evaluate_cf_efficiently_implicit_minibatch(model, test_queue, args, num_items, device):
-    '''for implicit. 用batch划分 评估隐式模型的方法，只运行一次，返回recall@20'''
+    '''for implicit. used in single model search'''
     model.eval()
     users, items, labels, users_ratings, items_ratings = test_queue
-    # batch_size = args.batch_size
-    batch_size = 5000
+    batch_size = args.batch_size
+    # batch_size = 5000
     batch_num = math.ceil(len(users) / batch_size)
     recall_20_avg_cnt, recall_20_avg_sum, ndcg_20_avg_cnt, ndcg_20_avg_sum = 0, 0, 0, 0
-    for k in range(batch_num):
+    for k in range(batch_num): 
         start = k * batch_size
         end = (k+1)*batch_size if (k+1)*batch_size <= len(users) else len(users)
         user_batch = users[start:end]
@@ -153,7 +173,9 @@ def evaluate_cf_efficiently_implicit_minibatch(model, test_queue, args, num_item
             with torch.cuda.device(device):              
                 all_users = all_users.cuda()
                 all_items = all_items.cuda()
-            inferences, _ = model(all_users, all_items, users_ratings, items_ratings)
+            with torch.no_grad():
+                inferences, _ = model(all_users, all_items, users_ratings, items_ratings)
+            # print('inferences: {}'.format(inferences))
             inferences_reshaped = inferences.reshape(users[end].cpu().detach().numpy().tolist()-users[start].cpu().detach().numpy().tolist(), args.num_items)
             train_mask = users_ratings.to_dense()[range(users[start].cpu().detach().numpy().tolist(), users[end].cpu().detach().numpy().tolist())]
             final_inferences = inferences_reshaped - train_mask * 1e10
@@ -172,7 +194,7 @@ def evaluate_cf_efficiently_implicit_minibatch(model, test_queue, args, num_item
 
 # get performance, for outer programming, return performance
 def get_arch_performance_single_device(arch, num_users, num_items, train_queue, valid_queue, test_queue, args, param, device, if_valid):
-    '''for explicit, return performance， 此处调用train，eval等函数'''
+    '''for explicit, return performance, 此处调用train, eval等函数'''
     log_format = '%(asctime)s %(message)s'
     logging.basicConfig(stream=sys.stdout, level=logging.INFO, filemode='w',
                         format=log_format, datefmt='%m/%d %I:%M:%S %p')
@@ -231,6 +253,69 @@ def get_arch_performance_single_device(arch, num_users, num_items, train_queue, 
     writer.close()
     return performance
 
+# get performance, for outer programming, return performance
+def get_arch_performance_time_single_device(arch, num_users, num_items, train_queue, valid_queue, test_queue, args, param, device, if_valid):
+    '''for explicit, return performance， 此处调用train，eval等函数'''
+    log_format = '%(asctime)s %(message)s'
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO,  filemode='w',
+                        format=log_format, datefmt='%m/%d %I:%M:%S %p')
+    random_name = args.mode + '_' + args.dataset + '_sub_' + '%.2f' % random.random() + '_' + \
+        str(param[0]) + '_' + str(param[1])
+    arch_encoding = '{}_{}_{}_{}_{}'.format(
+        arch['cf'], arch['emb']['u'], arch['emb']['i'], arch['ifc'], arch['pred'])
+    fh = logging.FileHandler(os.path.join(
+        'save/log_sub', args.mark + '_' + arch_encoding + '_' + random_name + '.txt'))
+    logging.getLogger().addHandler(fh)
+    logging.info(str(arch))
+    torch.manual_seed(args.seed)
+    # setproctitle.setproctitle('gaochen@get_performance{}'.format(int(device)))
+    setproctitle.setproctitle('wenyan@get_performance{}'.format(int(device)))
+    writer = SummaryWriter(
+        log_dir='save/tensorboard_sub/{}_{}'.format(arch_encoding, random_name))
+    lr = param[0]
+    args.embedding_dim = param[1]
+    print('lr', lr, 'rank', args.embedding_dim)
+    if args.use_gpu:
+        with torch.cuda.device(device):
+            print('Using GPU {}'.format(device))
+            model = single_model(num_users, num_items, args.embedding_dim, arch, args.weight_decay).cuda()
+            train_queue = [k.cuda() for k in train_queue]
+            train_queue[3] = train_queue[3].to_sparse()
+            train_queue[4] = train_queue[4].to_sparse()
+            test_queue = [k.cuda() for k in test_queue]
+            test_queue[3] = test_queue[3].to_sparse()
+            test_queue[4] = test_queue[4].to_sparse()
+
+    else:
+        print('Does not use GPU')
+        model = single_model(num_users, num_items, args.embedding_dim, arch, args.weight_decay)
+        train_queue[3] = train_queue[3].to_sparse()
+        train_queue[4] = train_queue[4].to_sparse()
+        test_queue[3] = test_queue[3].to_sparse()
+        test_queue[4] = test_queue[4].to_sparse()
+
+    optimizer = torch.optim.Adagrad(model.parameters(), lr)#default optimizer Adagrad
+    losses = []
+    performances = []
+    start = time()
+    for train_epoch in range(args.train_epochs):
+        loss = train_single_cf_efficiently(train_queue, model, optimizer, args)
+        losses.append(loss)
+        if train_epoch > 1000:
+            if (losses[-2]-losses[-1])/losses[-1] < 1e-4/train_queue[0].shape[0] or np.isnan(losses[-1]):
+                break
+        performance = evaluate_cf_efficiently(model, test_queue)
+        performances.append(performance)
+
+        arch_time = time()-start
+        logging.info('train_epoch: %d, loss: %.4f, rmse: %.4f[%.4f]' % (
+            train_epoch, loss, performance, arch_time))
+        writer.add_scalar('train/loss', loss, train_epoch)
+        writer.add_scalar('train/rmse', performance, train_epoch)
+    writer.close()
+    return performance, arch_time
+
+
 def get_arch_performance_implicit_single_device(arch, num_users, num_items, train_queue, valid_queue, test_queue, train_queue_pair, args, param, device, if_valid):
     '''for implicit, return 0??'''
     log_format = '%(asctime)s %(message)s'
@@ -239,6 +324,7 @@ def get_arch_performance_implicit_single_device(arch, num_users, num_items, trai
     random_name = args.mode + '_' + args.dataset + '_sub_' + '%.2f' % random.random() + '_' + \
         str(param[0]) + '_' + str(param[1]) # lr_candidates, rank_candidates
         # [0.01, 0.02, 0.05, 0.1], [2, 4, 8, 16]
+    # print(type(arch), arch)
     arch_encoding = '{}_{}_{}_{}_{}'.format(
         arch['cf'], arch['emb']['u'], arch['emb']['i'], arch['ifc'], arch['pred'])
     # fh = logging.FileHandler(os.path.join(
@@ -249,7 +335,7 @@ def get_arch_performance_implicit_single_device(arch, num_users, num_items, trai
     logging.info(str(arch))
     torch.manual_seed(args.seed)
     # setproctitle.setproctitle('gaochen@get_performance{}'.format(int(device)))
-    setproctitle.setproctitle('wenyan@get_performance{}'.format(int(device)))
+    setproctitle.setproctitle('autocf_single_yan{}'.format(int(device)))
     # writer = SummaryWriter(
     #     log_dir='save/tensorboard_sub/{}_{}'.format(arch_encoding, random_name))
     writer = SummaryWriter(
@@ -289,7 +375,7 @@ def get_arch_performance_implicit_single_device(arch, num_users, num_items, trai
         test_queue[4] = test_queue[4].to_sparse() # item_interactions
 
     for train_epoch in range(args.train_epochs):
-        if args.data_type == 'implicit': # 只会运行这一句
+        if args.data_type == 'implicit': # only for train
             loss = train_single_cf_efficiently(train_queue_pair, model, optimizer, args)
         else:
             loss = train_single_cf(train_queue, model, optimizer, args)
@@ -305,7 +391,7 @@ def get_arch_performance_implicit_single_device(arch, num_users, num_items, trai
                 pass
             
             if stop_train: # 如果停止训练，就进行eval阶段，得到最后的performance
-                performance = evaluate_cf_efficiently_implicit_minibatch(model, test_queue, args, num_items, device)
+                performance = evaluate_cf_efficiently_implicit_minibatch(model, test_queue, args, num_items, device) # return recall20
             else:
                 performance = 0, 0 # 为了节省时间，就全都输出零作为没有结束的替代
 
@@ -320,6 +406,94 @@ def get_arch_performance_implicit_single_device(arch, num_users, num_items, trai
     print("device: {}, lr: {}, performance: {}".format(device, param[0], performance))
     return performance
 
+def get_arch_performance_time_implicit_single_device(arch, num_users, num_items, train_queue, valid_queue, test_queue, train_queue_pair, args, param, device, if_valid):
+    '''for implicit, return 0??'''
+    log_format = '%(asctime)s %(message)s'
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO, filemode='w',
+                        format=log_format, datefmt='%m/%d %I:%M:%S %p')
+    random_name = args.mode + '_' + args.dataset + '_sub_' + '%.2f' % random.random() + '_' + \
+        str(param[0]) + '_' + str(param[1]) # lr_candidates, rank_candidates
+        # [0.01, 0.02, 0.05, 0.1], [2, 4, 8, 16]
+    # print(type(arch), arch)
+    arch_encoding = '{}_{}_{}_{}_{}'.format(
+        arch['cf'], arch['emb']['u'], arch['emb']['i'], arch['ifc'], arch['pred'])
+    # fh = logging.FileHandler(os.path.join(
+    #     'save/log_sub', args.mark + '_' + arch_encoding + '_' + random_name + '.txt'))
+    fh = logging.FileHandler(os.path.join(
+        args.save+'/log_sub', args.mark + '_' + arch_encoding + '_' + random_name + '.txt'))
+    logging.getLogger().addHandler(fh)
+    logging.info(str(arch))
+    torch.manual_seed(args.seed)
+    # setproctitle.setproctitle('gaochen@get_performance{}'.format(int(device)))
+    setproctitle.setproctitle('autocf_single_yan{}'.format(int(device)))
+    # writer = SummaryWriter(
+    #     log_dir='save/tensorboard_sub/{}_{}'.format(arch_encoding, random_name))
+    writer = SummaryWriter(
+        log_dir=args.save+'tensorboard_sub/{}_{}'.format(arch_encoding, random_name))
+    
+    lr = param[0]
+    args.embedding_dim = param[1]
+    # print('lr', lr, 'embedding_dim', args.embedding_dim)
+    if args.use_gpu:
+        with torch.cuda.device(device):
+            print('Using GPU {}'.format(device))
+            model = single_model(num_users, num_items, args.embedding_dim, arch, args.weight_decay).cuda()
+            if args.data_type == 'explicit':
+                train_queue = [k.cuda() for k in train_queue]
+                train_queue[3] = train_queue[3].to_sparse()
+                train_queue[4] = train_queue[4].to_sparse()
+            if args.data_type == 'implicit':
+                train_queue_pair = [k.cuda() for k in train_queue_pair]
+                train_queue_pair[3] = train_queue_pair[3].to_sparse()
+                train_queue_pair[4] = train_queue_pair[4].to_sparse()
+    else:
+        model = single_model(num_users, num_items, args.embedding_dim, arch, args.weight_decay)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr) # 固定optim优化器
+    losses = []
+    performances = [] # not used 
+    start = time()
+    all_users = torch.tensor(list(range(num_users)), dtype=torch.int64).repeat_interleave(num_items)
+    all_items = torch.tensor(list(range(num_items)), dtype=torch.int64).repeat(num_users)
+    with torch.cuda.device(device):
+        all_users = all_users.cuda()
+        all_items = all_items.cuda()
+    with torch.cuda.device(device):
+        test_queue = [k.cuda() for k in test_queue]
+        test_queue[3] = test_queue[3].to_sparse() # user_interactions
+        test_queue[4] = test_queue[4].to_sparse() # item_interactions
+
+    for train_epoch in range(args.train_epochs):
+        if args.data_type == 'implicit': # only for train
+            loss = train_single_cf_efficiently(train_queue_pair, model, optimizer, args)
+        else:
+            loss = train_single_cf(train_queue, model, optimizer, args)
+        losses.append(loss)
+        stop_train = False
+        # 先train 1000轮，1000轮以后才print，并且才会进行衰减的检验
+        if train_epoch > 1000:
+            if losses[-1] < 1e-6:
+                stop_train = True
+            elif np.isnan(losses[-1]) or (losses[-2]-losses[-1])/losses[-1] < 1e-4/train_queue_pair[0].shape[0] or  train_epoch == 2000-1:
+                stop_train = True # 当loss不再显著减小，或者losses最后一项不是数字，或者已经训练到了2000次，就停止训练
+            else:
+                pass
+            
+            if stop_train: # 如果停止训练，就进行eval阶段，得到最后的performance
+                performance = evaluate_cf_efficiently_implicit_minibatch(model, test_queue, args, num_items, device) # return recall20
+            else:
+                performance = 0, 0 # 为了节省时间，就全都输出零作为没有结束的替代
+            arch_time = time()-start
+            logging.info('train_epoch: %d, loss: %.4f, recall20: %.4f recall10: %.4f [%.4f]' % (
+                train_epoch, loss, performance[0], performance[1], arch_time))
+            writer.add_scalar('train/loss', loss, train_epoch)
+            writer.add_scalar('train/recall20', performance[0], train_epoch)
+            writer.add_scalar('train/recall10', performance[1], train_epoch)
+            if stop_train:
+                break
+    writer.close()
+    print("device: {}, lr: {}, performance(recall@20): {}".format(device, param[0], performance[0]))
+    return performance, arch_time
 
 
 
